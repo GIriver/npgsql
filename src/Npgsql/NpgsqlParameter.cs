@@ -25,12 +25,11 @@ namespace Npgsql
         int _size;
 
         // ReSharper disable InconsistentNaming
-        // TODO: Switch to private protected once mono's msbuild/csc supports C# 7.2
-        internal NpgsqlDbType? _npgsqlDbType;
-        internal DbType? _dbType;
-        internal string? _dataTypeName;
+        private protected NpgsqlDbType? _npgsqlDbType;
+        private protected string? _dataTypeName;
         // ReSharper restore InconsistentNaming
-        Type? _specificType;
+
+        DbType? _cachedDbType;
         string _name = string.Empty;
         object? _value;
 
@@ -245,9 +244,7 @@ namespace Npgsql
             {
                 // ReSharper disable once ConditionIsAlwaysTrueOrFalse
                 if (value == null)
-                {
                     _name = TrimmedName = string.Empty;
-                }
                 else if (value.Length > 0 && (value[0] == ':' || value[0] == '@'))
                 {
                     TrimmedName = value.Substring(1);
@@ -305,29 +302,22 @@ namespace Npgsql
         {
             get
             {
-                if (_dbType.HasValue) {
-                    return _dbType.Value;
-                }
-
-                if (_value != null) {   // Infer from value
+                if (_cachedDbType.HasValue)
+                    return _cachedDbType.Value;
+                if (_npgsqlDbType.HasValue)
+                    return _cachedDbType ??= GlobalTypeMapper.Instance.ToDbType(_npgsqlDbType.Value);
+                if (_value != null)   // Infer from value but don't cache
                     return GlobalTypeMapper.Instance.ToDbType(_value.GetType());
-                }
 
                 return DbType.Object;
             }
             set
             {
+                _npgsqlDbType = value == DbType.Object
+                    ? (NpgsqlDbType?)null
+                    : GlobalTypeMapper.Instance.ToNpgsqlDbType(value);
                 Handler = null;
-                if (value == DbType.Object)
-                {
-                    _dbType = null;
-                    _npgsqlDbType = null;
-                }
-                else
-                {
-                    _dbType = value;
-                    _npgsqlDbType = GlobalTypeMapper.Instance.ToNpgsqlDbType(value);
-                }
+                _cachedDbType = null;
             }
         }
 
@@ -355,9 +345,10 @@ namespace Npgsql
                 if (value == NpgsqlDbType.Range)
                     throw new ArgumentOutOfRangeException(nameof(value), "Cannot set NpgsqlDbType to just Range, Binary-Or with the element type (e.g. Range of integer is NpgsqlDbType.Range | NpgsqlDbType.Integer)");
 
-                Handler = null;
                 _npgsqlDbType = value;
-                _dbType = GlobalTypeMapper.Instance.ToDbType(value);
+                Handler = null;
+                _cachedDbType = null;
+                //_dbType = GlobalTypeMapper.Instance.ToDbType(value);
             }
         }
 
@@ -479,12 +470,6 @@ namespace Npgsql
 
         #region Internals
 
-        /// <summary>
-        /// Returns whether this parameter has had its type set explicitly via DbType or NpgsqlDbType
-        /// (and not via type inference)
-        /// </summary>
-        internal bool IsTypeExplicitlySet => _npgsqlDbType.HasValue || _dbType.HasValue;
-
         internal virtual void ResolveHandler(ConnectorTypeMapper typeMapper)
         {
             if (Handler != null)
@@ -494,8 +479,6 @@ namespace Npgsql
                 Handler = typeMapper.GetByNpgsqlDbType(_npgsqlDbType.Value);
             else if (_dataTypeName != null)
                 Handler = typeMapper.GetByDataTypeName(_dataTypeName);
-            else if (_dbType.HasValue)
-                Handler = typeMapper.GetByDbType(_dbType.Value);
             else if (_value != null)
                 Handler = typeMapper.GetByClrType(_value.GetType());
             else
@@ -527,10 +510,11 @@ namespace Npgsql
         /// <inheritdoc />
         public override void ResetDbType()
         {
-            _dbType = null;
+            _cachedDbType = null;
             _npgsqlDbType = null;
             _dataTypeName = null;
-            Value = Value;
+            //_value = null;
+            //ConvertedValue = null;
             Handler = null;
         }
 
@@ -556,9 +540,7 @@ namespace Npgsql
                 _precision = _precision,
                 _scale = _scale,
                 _size = _size,
-                _dbType = _dbType,
                 _npgsqlDbType = _npgsqlDbType,
-                _specificType = _specificType,
                 Direction = Direction,
                 IsNullable = IsNullable,
                 _name = _name,
